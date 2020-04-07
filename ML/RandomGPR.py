@@ -34,10 +34,12 @@ class rGPR:
         self.covar = covar
         self.estimators = estimators
         self.sequential_bootstrap = seqential_bootstrap
-        self.optimizer = self._optimizer()
+        self.optimizer = self._get_optimizer()
         self.training_iter = training_iter
         self.learning_rate = learning_rate
         self.model = self._get_model()
+        self.loss = gp.mlls.ExactMarginalLogLikelihood(likelihood, self.model)
+        self.samples = self.generate_samples()
 
     def generate_samples(self) -> list[pd.DataFrame]:
         if self.sequential_bootstrap:
@@ -47,7 +49,23 @@ class rGPR:
             pass
 
     def fit(self):
-        pass
+        for sample in self.samples:
+            for i in range(self.training_iter):
+                self.optimizer.zero_grad()  # Zero gradients from previous iteration
+                output = self.model(sample) # Output from model
+                loss = -self.loss(output, self.y) # Calc loss and backprop gradients
+                loss.backward()
+                print('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
+                    i + 1, self.training_iter, loss.item(),
+                    self.model.covar_module.base_kernel.lengthscale.item(),
+                    self.model.likelihood.noise.item()
+                ))
+                self.optimizer.step()
+            self.evaluate()
+
+    def evaluate(self):
+        self.model.eval()
+        self.likelihood.eval()
 
     def get_seq_sample(self, unique_obs):
         samp = []
@@ -66,10 +84,10 @@ class rGPR:
     def _get_data_from_index(self, samples_index):
         return [self.X.iloc[i, :] for i in samples_index]
 
-    def _optimizer(self):
-        optimizer = torch.optim.Adam([
+    def _get_optimizer(self):
+        return torch.optim.Adam([
             {'params': self.model.parameters()},  # Includes GaussianLikelihood parameters
-        ], lr=0.1)
+        ], lr=self.learning_rate)
 
     def _get_model(self):
         return ExactGPModel(self.X, self.y, self.likelihood)
